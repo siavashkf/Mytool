@@ -22,9 +22,8 @@ show_menu() {
     echo "4 - Update core"
     echo "5 - Restart core"
     echo "6 - Status"
-    echo "10 - Install ezwarp"
-    echo "11 - Install x-UI"
-    echo "12 - Install Tool"
+    echo "11 - Tool"
+    echo "12 - ezwarp"
     echo "0 - Exit"
 }
 
@@ -83,95 +82,162 @@ status_core() {
     read -r
 }
 
-install_ezwarp() {
-    echo "Installing ezwarp..."
-    set -e
-
-    architecture() {
-      case "$(uname -m)" in
-        'i386' | 'i686') arch='386' ;;
-        'x86_64') arch='amd64' ;;
-        'armv5tel') arch='armv5' ;;
-        'armv6l') arch='armv6' ;;
-        'armv7' | 'armv7l') arch='armv7' ;;
-        'aarch64') arch='arm64' ;;
-        'mips64el') arch='mips64le_softfloat' ;;
-        'mips64') arch='mips64_softfloat' ;;
-        'mipsel') arch='mipsle_softfloat' ;;
-        'mips') arch='mips_softfloat' ;;
-        's390x') arch='s390x' ;;
-        *) echo "error: The architecture is not supported."; return 1 ;;
-      esac
-      echo "$arch"
-    }
-
-    if [ "$(id -u)" -ne 0 ]; then
-        echo "This script requires root privileges. Please run it as root."
-        exit 1
-    fi
-
-    apt update && apt upgrade
-    ubuntu_major_version=$(grep DISTRIB_RELEASE /etc/lsb-release | cut -d'=' -f2 | cut -d'.' -f1)
-    if [[ "$ubuntu_major_version" == "24" ]]; then
-      sudo apt install -y wireguard
-    else
-      sudo apt install -y wireguard-dkms wireguard-tools resolvconf
-    fi
-
-    if ! command -v wg-quick &> /dev/null
-    then
-        echo "something went wrong with wireguard package installation"
-        exit 1
-    fi
-    if ! command -v resolvconf &> /dev/null
-    then
-        echo "something went wrong with resolvconf package installation"
-        exit 1
-    fi
-
+configure_iran() {
     clear
-    arch=$(architecture)
-    wget -O "/usr/bin/wgcf" https://github.com/ViRb3/wgcf/releases/download/v2.2.23/wgcf_2.2.23_linux_$arch
-    chmod +x /usr/bin/wgcf
+    echo "Configuring Iran Server..."
+    read -p "Enter tunnel port: " tunnel_port
+    read -p "Enter security token: " token
+    read -p "Do you want nodelay enabled? (true/false): " nodelay
+    read -p "How many ports do you have?: " port_count
 
-    clear
+    ports=()
+    for (( i=1; i<=port_count; i++ )); do
+        read -p "Enter input port $i: " input_port
+        read -p "Enter output port $i: " output_port
+        ports+=("\"$input_port=$output_port\"")
+    done
 
-    rm -rf wgcf-account.toml &> /dev/null || true
-    rm -rf /etc/wireguard/warp.conf &> /dev/null || true
+    read -p "Enter web port: " web_port
+    read -p "Channel size (default 2048): " channel_size
+    channel_size=${channel_size:-2048}
+    read -p "Connection pool (default 8): " connection_pool
+    connection_pool=${connection_pool:-8}
+    read -p "Heartbeat (default 20): " heartbeat
+    heartbeat=${heartbeat:-20}
 
-    wgcf register
-    read -rp "Do you want to use your own key? (Y/n): " response
-    if [[ $response =~ ^[Yy]$ ]]; then
-        read -rp "ENTER YOUR LICENSE: " LICENSE_KEY
-        sed -i "s/license_key = '.*'/license_key = '$LICENSE_KEY'/" wgcf-account.toml
-        wgcf update
+    echo "1 - tcp"
+    echo "2 - tcpmux"
+    echo "3 - ws"
+    echo "4 - wss"
+    read -p "Choose protocol: " protocol_choice
+    case $protocol_choice in
+        1) protocol="tcp" ;;
+        2) protocol="tcpmux" ;;
+        3) protocol="ws" ;;
+        4) 
+            protocol="wss"
+            read -p "Enter TLS cert (default /root/server.crt): " tls_cert
+            tls_cert=${tls_cert:-/root/server.crt}
+            read -p "Enter TLS key (default /root/server.key): " tls_key
+            tls_key=${tls_key:-/root/server.key}
+            ;;
+    esac
+
+    echo "[server]" > /root/backhaul/config.toml
+    echo "bind_addr = \"0.0.0.0:$tunnel_port\"" >> /root/backhaul/config.toml
+    echo "transport = \"$protocol\"" >> /root/backhaul/config.toml
+    echo "token = \"$token\"" >> /root/backhaul/config.toml
+    echo "keepalive_period = 20" >> /root/backhaul/config.toml
+    echo "nodelay = $nodelay" >> /root/backhaul/config.toml
+    echo "channel_size = $channel_size" >> /root/backhaul/config.toml
+    echo "connection_pool = $connection_pool" >> /root/backhaul/config.toml
+    echo "heartbeat = $heartbeat" >> /root/backhaul/config.toml
+    echo "mux_session = 1" >> /root/backhaul/config.toml
+    echo "mux_version = 1" >> /root/backhaul/config.toml
+    echo "mux_framesize = 32768" >> /root/backhaul/config.toml
+    echo "mux_recievebuffer = 4194304" >> /root/backhaul/config.toml
+    echo "mux_streambuffer = 65536" >> /root/backhaul/config.toml
+    echo "sniffer = false" >> /root/backhaul/config.toml
+    echo "web_port = $web_port" >> /root/backhaul/config.toml
+    echo "sniffer_log = \"backhaul.json\"" >> /root/backhaul/config.toml
+    if [ "$protocol" == "wss" ]; then
+        echo "tls_cert = \"$tls_cert\"" >> /root/backhaul/config.toml
+        echo "tls_key = \"$tls_key\"" >> /root/backhaul/config.toml
     fi
+    echo "ports = [" >> /root/backhaul/config.toml
+    for port in "${ports[@]}"; do
+        echo "    $port," >> /root/backhaul/config.toml
+    done
+    echo "]" >> /root/backhaul/config.toml
 
-    wgcf generate
-
-    sed -i '/\n\[Peer\]\n/i Table = off' wgcf-profile.conf
-    mv wgcf-profile.conf /etc/wireguard/warp.conf
-
-    systemctl disable --now wg-quick@warp &> /dev/null || true
-    systemctl enable --now wg-quick@warp
-
-    echo "Wireguard warp is up and running"
+    create_service_file
+    echo "Iran Server configuration created successfully!"
     sleep 2
 }
 
-install_x_ui() {
-    echo "Installing x-UI..."
-    bash <(curl -Ls https://raw.githubusercontent.com/alireza0/x-ui/master/install.sh)
-    echo "x-UI installed successfully!"
+configure_kharej() {
+    clear
+    echo "Configuring Kharej Server..."
+    read -p "Enter remote IP address: " remote_ip
+    read -p "Enter tunnel port: " tunnel_port
+    read -p "Enter security token: " token
+    read -p "Do you want nodelay enabled? (true/false): " nodelay
+    read -p "Enter web port: " web_port
+
+    echo "1 - tcp"
+    echo "2 - tcpmux"
+    echo "3 - ws"
+    echo "4 - wss"
+    read -p "Choose protocol: " protocol_choice
+    case $protocol_choice in
+        1) protocol="tcp" ;;
+        2) protocol="tcpmux" ;;
+        3) protocol="ws" ;;
+        4) 
+            protocol="wss"
+            read -p "Enter TLS cert (default /root/server.crt): " tls_cert
+            tls_cert=${tls_cert:-/root/server.crt}
+            read -p "Enter TLS key (default /root/server.key): " tls_key
+            tls_key=${tls_key:-/root/server.key}
+            ;;
+    esac
+
+    echo "[client]" > /root/backhaul/config.toml
+    echo "remote_addr = \"$remote_ip:$tunnel_port\"" >> /root/backhaul/config.toml
+    echo "transport = \"$protocol\"" >> /root/backhaul/config.toml
+    echo "token = \"$token\"" >> /root/backhaul/config.toml
+    echo "keepalive_period = 20" >> /root/backhaul/config.toml
+    echo "nodelay = $nodelay" >> /root/backhaul/config.toml
+    echo "retry_interval = 1" >> /root/backhaul/config.toml
+    echo "log_level = \"info\"" >> /root/backhaul/config.toml
+    echo "mux_session = 1" >> /root/backhaul/config.toml
+    echo "mux_version = 1" >> /root/backhaul/config.toml
+    echo "mux_framesize = 32768" >> /root/backhaul/config.toml
+    echo "mux_recievebuffer = 4194304" >> /root/backhaul/config.toml
+    echo "mux_streambuffer = 65536" >> /root/backhaul/config.toml
+    echo "sniffer = false" >> /root/backhaul/config.toml
+    echo "web_port = $web_port" >> /root/backhaul/config.toml
+    echo "sniffer_log = \"backhaul.json\"" >> /root/backhaul/config.toml
+    if [ "$protocol" == "wss" ]; then
+        echo "tls_cert = \"$tls_cert\"" >> /root/backhaul/config.toml
+        echo "tls_key = \"$tls_key\"" >> /root/backhaul/config.toml
+    fi
+
+    create_service_file
+    echo "Kharej Server configuration created successfully!"
     sleep 2
 }
 
-install_tool() {
-    echo "Installing Tool..."
-    curl -Ls https://raw.githubusercontent.com/Mmdd93/v2ray-assistance/refs/heads/main/node.sh -o node.sh
-    sudo bash node.sh
-    echo "Tool installed successfully!"
-    sleep 2
+create_service_file() {
+    echo "Creating systemd service file..."
+    echo "[Unit]" > /etc/systemd/system/backhaul.service
+    echo "Description=Backhaul Service" >> /etc/systemd/system/backhaul.service
+    echo "After=network.target" >> /etc/systemd/system/backhaul.service
+    echo "" >> /etc/systemd/system/backhaul.service
+    echo "[Service]" >> /etc/systemd/system/backhaul.service
+    echo "ExecStart=/usr/bin/backhaul -c /root/backhaul/config.toml" >> /etc/systemd/system/backhaul.service
+    echo "Restart=always" >> /etc/systemd/system/backhaul.service
+    echo "RestartSec=3" >> /etc/systemd/system/backhaul.service
+    echo "User=root" >> /etc/systemd/system/backhaul.service
+    echo "LimitNOFILE=4096" >> /etc/systemd/system/backhaul.service
+    echo "" >> /etc/systemd/system/backhaul.service
+    echo "[Install]" >> /etc/systemd/system/backhaul.service
+    echo "WantedBy=multi-user.target" >> /etc/systemd/system/backhaul.service
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable backhaul.service
+    sudo systemctl start backhaul.service
+    echo "Service created and started successfully!"
+}
+
+download_and_run_script() {
+    script_url=$1
+    script_name=$2
+    echo "Downloading $script_name..."
+    wget -O /tmp/$script_name.sh $script_url
+    chmod +x /tmp/$script_name.sh
+    /tmp/$script_name.sh
+    echo "$script_name script executed successfully!"
 }
 
 while true; do
@@ -179,7 +245,7 @@ while true; do
     read -p "Choose an option: " choice
     case $choice in
         1) install_core ;;
-        2)
+        2) 
             echo "1 - Iran Server"
             echo "2 - Kharej Server"
             read -p "Choose server type: " server_choice
@@ -192,9 +258,12 @@ while true; do
         4) update_core ;;
         5) restart_core ;;
         6) status_core ;;
-        10) install_ezwarp ;;
-        11) install_x_ui ;;
-        12) install_tool ;;
+        11) 
+            download_and_run_script "https://raw.githubusercontent.com/Mmdd93/v2ray-assistance/refs/heads/main/node.sh" "Tool"
+            ;;
+        12) 
+            download_and_run_script "https://raw.githubusercontent.com/mikeesierrah/ez-warp/refs/heads/main/ez-warp.sh" "ezwarp"
+            ;;
         0) exit 0 ;;
         *) echo "Invalid option. Please choose a valid option." ;;
     esac
